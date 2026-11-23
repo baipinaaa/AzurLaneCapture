@@ -37,7 +37,8 @@ final class NativeBridge {
             System.load(dir + "/libazcap.so");
             loaded = true;
             nativeInit();
-            status = "loaded";
+            nativeStart();
+            status = "started";
             scheduleRefresh();
         } catch (Throwable t) {
             status = "load-failed:" + t.getClass().getSimpleName();

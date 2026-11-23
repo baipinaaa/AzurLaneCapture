@@ -139,8 +139,9 @@ final class FileSink {
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
-                initDir(app, stamp);
+                initPrivate(app, stamp);
                 writeMeta(app, stamp);
+                if (Config.USE_ROOT) kickOffRootProbe(app, stamp);
                 loop();
             }
         }, "azcap-sink");
@@ -148,36 +149,65 @@ final class FileSink {
         t.start();
     }
 
-    private static void initDir(Context ctx, String stamp) {
-        final String proc = currentProcess();
-        final String pkg = ctx.getPackageName();
-        final String suffix = (proc.equals(pkg) || proc.isEmpty()) ? ""
-                : "/proc_" + proc.replace(':', '_').replace('/', '_');
-        if (RootShell.available()) {
-            String target = Config.ROOT_BASE + "/" + stamp + suffix;
-            String out = RootShell.exec(
-                    "mkdir -p '" + target + "' && chmod 0775 '" + target + "' && echo AZOK", 8000);
-            if (out != null && out.contains("AZOK")) {
+    /** 私有外部目录：游戏进程自身一定有写权限，先落这里不丢数据。 */
+    private static void initPrivate(Context ctx, String stamp) {
+        File ext = ctx.getExternalFilesDir(null);
+        File d = new File(ext != null ? ext : ctx.getFilesDir(),
+                "logs/azurlane/" + stamp + processSuffix(ctx));
+        if (!d.mkdirs() && !d.isDirectory()) {
+            d = new File(ctx.getFilesDir(), "logs/" + stamp);
+            d.mkdirs();
+        }
+        baseDir = d.getAbsolutePath();
+        rootMode = false;
+        modeNote = "private";
+    }
+
+    private static String processSuffix(Context ctx) {
+        String proc = currentProcess();
+        String pkg = ctx.getPackageName();
+        if (proc.equals(pkg) || proc.isEmpty() || "?".equals(proc)) return "";
+        return "/proc_" + proc.replace(':', '_').replace('/', '_');
+    }
+
+    /** 延迟 25s 再探测 root（避开启动期反作弊扫描），成功后切目录并搬运已有文件。 */
+    private static void kickOffRootProbe(final Context ctx, final String stamp) {
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Thread.sleep(25000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (!RootShell.available()) {
+                    modeNote = "no-root";
+                    return;
+                }
+                String target = Config.ROOT_BASE + "/" + stamp + processSuffix(ctx);
+                String out = RootShell.exec(
+                        "mkdir -p '" + target + "' && chmod 0775 '" + target + "' && echo AZOK", 12000);
+                if (out == null || !out.contains("AZOK")) {
+                    modeNote = "root-failed";
+                    return;
+                }
+                String old = baseDir;
+                synchronized (writers) {
+                    for (RootShell.Writer w : writers.values()) w.close();
+                    writers.clear();
+                }
+                gens.clear();
                 baseDir = target;
                 rootMode = true;
                 modeNote = "root";
-                return;
+                if (old != null && !old.equals(target)) {
+                    RootShell.exec("cp -a '" + old + "/.' '" + target + "/' 2>/dev/null; echo AZOK", 30000);
+                }
+                log(Log.INFO, 1, Config.TAG, "write dir -> " + target);
             }
-            modeNote = "root-failed";
-        } else {
-            modeNote = "no-root";
-        }
-        File ext = ctx.getExternalFilesDir(null);
-        File d = new File(ext != null ? ext : ctx.getFilesDir(),
-                "logs/azurlane/" + stamp + suffix);
-        if (d.mkdirs() || d.isDirectory()) {
-            baseDir = d.getAbsolutePath();
-            rootMode = false;
-        } else {
-            baseDir = ctx.getFilesDir().getAbsolutePath() + "/logs/" + stamp;
-            new File(baseDir).mkdirs();
-            rootMode = false;
-        }
+        }, "azcap-rootprobe");
+        t.setDaemon(true);
+        t.start();
     }
 
     private static void writeMeta(Context ctx, String stamp) {
@@ -210,7 +240,11 @@ final class FileSink {
                     new java.io.FileReader("/proc/self/cmdline"));
             String line = r.readLine();
             r.close();
-            return line == null ? "?" : line.replace('\0', ' ');
+            if (line == null) return "?";
+            int nul = line.indexOf('\u0000');
+            if (nul >= 0) line = line.substring(0, nul);
+            line = line.trim();
+            return line.isEmpty() ? "?" : line;
         } catch (Throwable t) {
             return "?";
         }
@@ -244,7 +278,8 @@ final class FileSink {
             String line = "{\"t\":" + now + ",\"queued\":" + Q.size()
                     + ",\"dropped\":" + dropped.get()
                     + ",\"written\":" + written.get()
-                    + ",\"native\":" + NativeBridge.nativeStats() + "}\n";
+                    + ",\"native\":" + NativeBridge.nativeStats()
+                    + ",\"hooks\":" + NativeBridge.hooksJson() + "}\n";
             append("stats.jsonl", line.getBytes(UTF8));
         } catch (Throwable ignored) {
         }

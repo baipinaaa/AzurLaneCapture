@@ -100,3 +100,21 @@ open("c003_1.2.3.4_8017.tx.bin", "rb").read()
 
 抓到的内容包含账号相关报文（登录、订单、聊天）。仅用于自建服务端/协议研究，
 不要公开分发原始抓包。
+
+## 写入位置与 root
+
+启动时先落到 app 私有外部目录（一定有权限、不丢数据）：
+
+```
+/storage/emulated/0/Android/data/com.bilibili.azurlane/files/logs/azurlane/<时间戳>/
+```
+
+启动 25 秒后如果 `su` 可用，会把目录切到
+
+```
+/storage/emulated/0/logs/azurlane/<时间戳>/
+```
+
+并把已抓到的文件复制过去（`meta.json` 里 `"write":"root"` 表示切换成功，`"private"`/`"no-root"` 表示仍在私有目录）。
+
+`su` 可用性按 **进程 uid** 授权：第一次会弹 Magisk/KernelSU 授权框，选"允许"并勾选永久。若不想让游戏进程拿到 root，把 `app/java/com/azurlane/capture/Config.java` 里 `USE_ROOT` 改成 `false` 后重新构建即可，此时只写私有目录，用 `adb pull /storage/emulated/0/Android/data/com.bilibili.azurlane/files/logs/azurlane` 取回。
