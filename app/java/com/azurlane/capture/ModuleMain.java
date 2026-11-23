@@ -47,7 +47,7 @@ public class ModuleMain extends XposedModule {
             log(Log.ERROR, Config.TAG, "CrashHook failed", t);
         }
         try {
-            LogHooks.probeLua(this, param.getClassLoader());
+            LogHooks.probeLua(this, param.getDefaultClassLoader());
         } catch (Throwable t) {
             log(Log.WARN, Config.TAG, "probeLua failed", t);
         }
