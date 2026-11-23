@@ -4,3 +4,6 @@ build/
 *.idsig
 __pycache__/
 .work/
+signing/*.keystore
+signing/*.jks
+.ci-logs/

@@ -89,7 +89,13 @@ print("apk entries:", ", ".join(sorted(zipfile.ZipFile(out).namelist())))
 PY
 
 echo "==> [7/7] zipalign + 签名"
-KS="${KEYSTORE:-$ROOT/signing/dev.keystore}"
+if [ -n "${KEYSTORE_B64:-}" ]; then
+  mkdir -p "$ROOT/.build-cache/signing"
+  printf '%s' "$KEYSTORE_B64" | base64 -d > "$ROOT/.build-cache/signing/dev.keystore"
+  KS="$ROOT/.build-cache/signing/dev.keystore"
+else
+  KS="${KEYSTORE:-$ROOT/signing/dev.keystore}"
+fi
 KS_PASS="${KEYSTORE_PASS:-azcap123}"
 KEY_ALIAS="${KEY_ALIAS:-azcap}"
 KEY_PASS="${KEY_PASS:-azcap123}"
