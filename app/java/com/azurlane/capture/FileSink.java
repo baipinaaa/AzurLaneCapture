@@ -7,6 +7,8 @@ import android.util.Log;
 import java.io.File;
 import java.nio.charset.Charset;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -30,6 +32,7 @@ final class FileSink {
     private static volatile String baseDir = null;
     private static volatile boolean rootMode = false;
     private static volatile String modeNote = "";
+    private static volatile File configFile = null;
 
     private static final SimpleDateFormat FILE_TS =
             new SimpleDateFormat("yyyy-MM-dd_HHmmss", Locale.US);
@@ -52,6 +55,7 @@ final class FileSink {
 
     static final long STARTED_AT = System.currentTimeMillis();
     private static long lastStatsAt = 0;
+    private static long lastConfigAt = 0;
 
     static final class Rec {
         int type, dir, fd, seq, port, prio, orig;
@@ -65,9 +69,15 @@ final class FileSink {
         long bytes;
     }
 
+    /** 单调时钟：分析卡顿时比 wall clock 可靠。 */
+    static long elapsedMs() {
+        return System.currentTimeMillis() - STARTED_AT;
+    }
+
     // ── 对外入口（可在任意线程调用，只入队） ─────────────────────────────
     static void log(int prio, int source, String tag, String msg) {
         if (!Config.captureLog || !started) return;
+        if (!LogHooks.allowed(tag)) return;
         String text = msg == null ? "" : msg;
         if (text.length() > Config.MAX_LINE) {
             text = text.substring(0, Config.MAX_LINE) + "…(+" + (text.length() - Config.MAX_LINE) + ")";
@@ -78,6 +88,17 @@ final class FileSink {
         r.prio = prio;
         r.tag = tag;
         r.ts = System.currentTimeMillis();
+        r.data = text.getBytes(UTF8);
+        offer(r);
+    }
+
+    /** 任意文本直接写文件（采样、统计用）。 */
+    static void writeRaw(String rel, String text) {
+        if (!started || text == null || text.isEmpty()) return;
+        Rec r = new Rec();
+        r.type = Config.TYPE_RAW;
+        r.ts = System.currentTimeMillis();
+        r.tag = rel;
         r.data = text.getBytes(UTF8);
         offer(r);
     }
@@ -108,6 +129,7 @@ final class FileSink {
         if (type == Config.TYPE_LOG && !Config.captureLog) return;
         if (type == Config.TYPE_NET && !Config.captureNet) return;
         if (type == Config.TYPE_TLS && !Config.captureTls) return;
+        if ((type == Config.TYPE_NET || type == Config.TYPE_TLS) && !Config.portWanted(port)) return;
         Rec r = new Rec();
         r.type = type;
         r.dir = dir;
@@ -142,6 +164,13 @@ final class FileSink {
                 initPrivate(app, stamp);
                 writeMeta(app, stamp);
                 if (Config.USE_ROOT) kickOffRootProbe(app, stamp);
+                Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        flushAll();
+                    }
+                }, "azcap-shutdown"));
+                StackSampler.start();
                 loop();
             }
         }, "azcap-sink");
@@ -152,8 +181,9 @@ final class FileSink {
     /** 私有外部目录：游戏进程自身一定有写权限，先落这里不丢数据。 */
     private static void initPrivate(Context ctx, String stamp) {
         File ext = ctx.getExternalFilesDir(null);
-        File d = new File(ext != null ? ext : ctx.getFilesDir(),
-                "logs/azurlane/" + stamp + processSuffix(ctx));
+        File root = new File(ext != null ? ext : ctx.getFilesDir(), "logs/azurlane");
+        configFile = new File(root, "config.json");
+        File d = new File(root, stamp + processSuffix(ctx));
         if (!d.mkdirs() && !d.isDirectory()) {
             d = new File(ctx.getFilesDir(), "logs/" + stamp);
             d.mkdirs();
@@ -161,6 +191,8 @@ final class FileSink {
         baseDir = d.getAbsolutePath();
         rootMode = false;
         modeNote = "private";
+        pruneSessions(root);
+        Config.reload(configFile);
     }
 
     private static String processSuffix(Context ctx) {
@@ -168,6 +200,32 @@ final class FileSink {
         String pkg = ctx.getPackageName();
         if (proc.equals(pkg) || proc.isEmpty() || "?".equals(proc)) return "";
         return "/proc_" + proc.replace(':', '_').replace('/', '_');
+    }
+
+    /** 只保留最近 keepSessions 个会话目录（按名字即时间戳排序）。 */
+    private static void pruneSessions(File root) {
+        File[] list = root.listFiles();
+        if (list == null || list.length <= 1) return;
+        Arrays.sort(list, new Comparator<File>() {
+            @Override
+            public int compare(File a, File b) {
+                return b.getName().compareTo(a.getName());
+            }
+        });
+        int keep = Math.max(1, Config.keepSessions);
+        int seen = 0;
+        for (File f : list) {
+            if (!f.isDirectory() || !f.getName().matches("\\d{4}-\\d{2}-\\d{2}_\\d{6}.*")) continue;
+            seen++;
+            if (seen > keep) deleteTree(f);
+        }
+    }
+
+    private static void deleteTree(File f) {
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) deleteTree(k);
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
     }
 
     /** 延迟 25s 再探测 root（避开启动期反作弊扫描），成功后切目录并搬运已有文件。 */
@@ -203,6 +261,8 @@ final class FileSink {
                 if (old != null && !old.equals(target)) {
                     RootShell.exec("cp -a '" + old + "/.' '" + target + "/' 2>/dev/null; echo AZOK", 30000);
                 }
+                RootShell.exec("ls -1dt " + Config.ROOT_BASE + "/20??-??-??_* 2>/dev/null | tail -n +"
+                        + (Math.max(1, Config.keepSessions) + 1) + " | xargs -r rm -rf", 20000);
                 log(Log.INFO, 1, Config.TAG, "write dir -> " + target);
             }
         }, "azcap-rootprobe");
@@ -227,7 +287,12 @@ final class FileSink {
           .append(Build.VERSION.SDK_INT).append(")\",\n")
           .append("  \"config\": {\"log\": ").append(Config.captureLog)
           .append(", \"net\": ").append(Config.captureNet)
-          .append(", \"tls\": ").append(Config.captureTls).append("},\n")
+          .append(", \"tls\": ").append(Config.captureTls)
+          .append(", \"http\": ").append(Config.captureHttp)
+          .append(", \"frame\": ").append(Config.frameSplit)
+          .append(", \"verbose\": ").append(Config.verbose)
+          .append(", \"maxSizeMb\": ").append(Config.maxFileMb)
+          .append(", \"keepSessions\": ").append(Config.keepSessions).append("},\n")
           .append("  \"hooks\": ").append(NativeBridge.hooksJson()).append("\n")
           .append("}\n");
         append("meta.json", sb.toString().getBytes(UTF8));
@@ -235,18 +300,21 @@ final class FileSink {
     }
 
     private static String currentProcess() {
+        java.io.FileInputStream in = null;
         try {
-            java.io.BufferedReader r = new java.io.BufferedReader(
-                    new java.io.FileReader("/proc/self/cmdline"));
-            String line = r.readLine();
-            r.close();
-            if (line == null) return "?";
-            int nul = line.indexOf('\u0000');
-            if (nul >= 0) line = line.substring(0, nul);
-            line = line.trim();
-            return line.isEmpty() ? "?" : line;
+            in = new java.io.FileInputStream("/proc/self/cmdline");
+            byte[] buf = new byte[256];
+            int n = in.read(buf);
+            if (n <= 0) return "?";
+            int end = 0;
+            while (end < n && buf[end] != 0) end++;
+            // 尾部是 0 填充，必须按第一个 NUL 截断，否则目录名会带一串空格
+            String s = new String(buf, 0, end, Charset.forName("UTF-8")).trim();
+            return s.isEmpty() ? "?" : s;
         } catch (Throwable t) {
             return "?";
+        } finally {
+            if (in != null) try { in.close(); } catch (Throwable ignored) {}
         }
     }
 
@@ -259,6 +327,7 @@ final class FileSink {
             } catch (InterruptedException ignored) {
             }
             if (r == null) {
+                maybeConfig();
                 maybeStats();
                 continue;
             }
@@ -270,18 +339,45 @@ final class FileSink {
         }
     }
 
+    /** 每 15 秒重读 config.json，改完不用重启游戏。 */
+    private static void maybeConfig() {
+        long now = System.currentTimeMillis();
+        if (now - lastConfigAt < 15000) return;
+        lastConfigAt = now;
+        File f = configFile;
+        if (f == null) return;
+        boolean before = Config.verbose;
+        Config.reload(f);
+        if (before != Config.verbose) Log.i(Config.TAG, "verbose -> " + Config.verbose);
+    }
+
     private static void maybeStats() {
         long now = System.currentTimeMillis();
-        if (now - lastStatsAt < 60000) return;
+        if (now - lastStatsAt < 10000) return;
         lastStatsAt = now;
         try {
-            String line = "{\"t\":" + now + ",\"queued\":" + Q.size()
+            String line = "{\"t\":" + now + ",\"ms\":" + elapsedMs()
+                    + ",\"queued\":" + Q.size()
                     + ",\"dropped\":" + dropped.get()
                     + ",\"written\":" + written.get()
+                    + ",\"frames\":" + FrameAssembler.statsJson()
                     + ",\"native\":" + NativeBridge.nativeStats()
                     + ",\"hooks\":" + NativeBridge.hooksJson() + "}\n";
             append("stats.jsonl", line.getBytes(UTF8));
         } catch (Throwable ignored) {
+        }
+    }
+
+    /** 进程被要求退出时尽量把队列排空（被 kill -9 时不会执行）。 */
+    private static void flushAll() {
+        try {
+            Rec r;
+            while ((r = Q.poll()) != null) dispatch(r);
+        } catch (Throwable ignored) {
+        }
+        synchronized (writers) {
+            for (RootShell.Writer w : writers.values()) w.close();
+            writers.clear();
         }
     }
 
@@ -293,15 +389,18 @@ final class FileSink {
                     String ts = FILE_TS.format(new Date(r.ts));
                     String name = "crash/" + ts + "-" + safeName(r.tag) + ".txt";
                     append(name, r.data == null ? new byte[0] : r.data);
-                    append("app.log", line("E", "CrashHandler", text).getBytes(UTF8));
+                    append("app.log", line("E", "CrashHandler", text, r.ts).getBytes(UTF8));
                 } else if (r.dir >= 10) {
-                    append("app.log", line(nativeLevel(r.dir - 10), "native/" + nz(r.tag), text)
+                    append("app.log", line(nativeLevel(r.dir - 10), "native/" + nz(r.tag), text, r.ts)
                             .getBytes(UTF8));
                 } else {
-                    append("app.log", line("J", nz(r.tag), text).getBytes(UTF8));
+                    append("app.log", line("J", nz(r.tag), text, r.ts).getBytes(UTF8));
                 }
                 break;
             }
+            case Config.TYPE_RAW:
+                append(nz(r.tag), r.data);
+                break;
             case Config.TYPE_NET:
             case Config.TYPE_TLS:
                 writeNet(r);
@@ -324,9 +423,10 @@ final class FileSink {
         }
     }
 
-    private static String line(String level, String tag, String text) {
-        StringBuilder sb = new StringBuilder(text.length() + 64);
-        sb.append(LINE_TS.format(new Date())).append("  [").append(level).append("] ");
+    private static String line(String level, String tag, String text, long ts) {
+        StringBuilder sb = new StringBuilder(text.length() + 80);
+        sb.append(LINE_TS.format(new Date(ts)))
+          .append("  +").append(ts - STARTED_AT).append("ms  [").append(level).append("] ");
         sb.append(pad(tag, 18)).append(" : ").append(text);
         if (text.length() == 0 || text.charAt(text.length() - 1) != '\n') sb.append('\n');
         return sb.toString();
@@ -341,7 +441,8 @@ final class FileSink {
         if (len > 0) {
             append(sub + "/" + conn + (tx ? ".tx.bin" : ".rx.bin"), r.data);
         }
-        String idx = "{\"t\":" + r.ts + ",\"fd\":" + r.fd + ",\"seq\":" + r.seq
+        String idx = "{\"t\":" + r.ts + ",\"ms\":" + (r.ts - STARTED_AT)
+                + ",\"fd\":" + r.fd + ",\"seq\":" + r.seq
                 + ",\"dir\":\"" + (tx ? "tx" : "rx") + "\""
                 + ",\"addr\":\"" + nz(r.addr) + "\",\"port\":" + r.port
                 + ",\"len\":" + r.orig
@@ -353,6 +454,13 @@ final class FileSink {
         append(sub + "/streams.txt",
                 HexDump.dump(hdr, r.data == null ? new byte[0] : r.data, len, Config.PREVIEW_BYTES)
                         .getBytes(UTF8));
+
+        // 8017/8018：再切一层 protobuf 帧，直接看 pid
+        if (r.type == Config.TYPE_NET) {
+            String frames = FrameAssembler.feed(r.fd, r.dir, r.seq, r.port, r.ts,
+                    r.ts - STARTED_AT, r.data);
+            if (frames != null) append("net/frames.jsonl", frames.getBytes(UTF8));
+        }
     }
 
     // ── 文件写入（仅 sink 线程调用） ──────────────────────────────────────
@@ -363,11 +471,11 @@ final class FileSink {
             g = new Gen();
             gens.put(rel, g);
         }
-        if (g.bytes > Config.MAX_FILE_BYTES) {
+        if (g.bytes > Config.maxFileBytes()) {
             g.gen++;
             g.bytes = 0;
         }
-        String real = g.gen == 0 ? rel : rel + "." + g.gen;
+        String real = g.gen == 0 ? rel : genName(rel, g.gen);
         if (written.get() > Config.MAX_TOTAL_BYTES) {
             dropped.incrementAndGet();
             return;
@@ -385,6 +493,14 @@ final class FileSink {
             RootShell.Writer w = writers.remove(real);
             if (w != null) w.close();
         }
+    }
+
+    /** app.log -> app.1.log；net/index.jsonl -> net/index.1.jsonl */
+    private static String genName(String rel, int gen) {
+        int dot = rel.lastIndexOf('.');
+        int slash = rel.lastIndexOf('/');
+        if (dot <= slash) return rel + "." + gen;
+        return rel.substring(0, dot) + "." + gen + rel.substring(dot);
     }
 
     // ── 小工具 ────────────────────────────────────────────────────────────

@@ -161,7 +161,11 @@ Java_com_azurlane_capture_NativeBridge_nativeInit(JNIEnv *env, jclass clazz) {
     if (g_bridge) env->DeleteGlobalRef(g_bridge);
     g_bridge = (jclass)env->NewGlobalRef(clazz);
     g_on_frame = env->GetStaticMethodID(
-            clazz, "onNativeFrame", "(IIIIIIJILjava/lang/String;[B)V");
+            clazz, "onNativeFrame", "(IIIIIJILjava/lang/String;[B)V");
+    if (g_on_frame == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        LOGE("nativeInit: onNativeFrame 方法签名不匹配 (IIIIIJILjava/lang/String;[B)V");
+    }
     LOGI("nativeInit bridge=%p method=%p", (void *)g_bridge, (void *)g_on_frame);
 }
 
@@ -194,6 +198,12 @@ Java_com_azurlane_capture_NativeBridge_nativeRefresh(JNIEnv *env, jclass clazz) 
     return xhook_refresh(0);
 }
 
+JNIEXPORT void JNICALL
+Java_com_azurlane_capture_NativeBridge_nativeSetVerbose(JNIEnv *env, jclass clazz, jboolean on) {
+    (void)env; (void)clazz;
+    az_set_verbose(on ? 1 : 0);
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_azurlane_capture_NativeBridge_nativeStats0(JNIEnv *env, jclass clazz) {
     (void)clazz;
@@ -215,6 +225,6 @@ void az_stats_json(char *out, size_t cap) {
     pthread_mutex_unlock(&g_q_lock);
     snprintf(out, cap,
              "{\"frames\":%ld,\"bytes\":%ld,\"dropped\":%ld,\"queue\":%d,\"queueBytes\":%zu,"
-             "\"net\":%ld,\"log\":%ld,\"tls\":%ld}",
-             frames, bytes, drop, q, qb, net, lg, tls);
+             "\"net\":%ld,\"log\":%ld,\"tls\":%ld,\"sig\":%d}",
+             frames, bytes, drop, q, qb, net, lg, tls, g_on_frame != nullptr ? 1 : 0);
 }

@@ -26,6 +26,8 @@ extern JavaVM *g_az_vm;
 
 // 单调递增的墙钟微秒（CLOCK_REALTIME）
 int64_t az_now_us(void);
+/* 1 = 记录全部 log tag（默认只记白名单） */
+void az_set_verbose(int on);
 
 // 入队（内部拷贝 data，调用方无需持有）
 void az_emit(int type, int dir, int fd, int seq, const char *addr, int port,

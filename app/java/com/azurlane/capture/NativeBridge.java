@@ -1,6 +1,7 @@
 package com.azurlane.capture;
 
 import android.content.pm.ApplicationInfo;
+import android.os.Build;
 import android.util.Log;
 
 /** native 库加载与 JNI 回调入口。 */
@@ -9,6 +10,7 @@ final class NativeBridge {
     private static volatile boolean started = false;
     private static volatile String status = "not-started";
     private static volatile String lastRefresh = "";
+    private static volatile String detail = "";
 
     static native void nativeInit();
 
@@ -16,7 +18,17 @@ final class NativeBridge {
 
     static native int nativeRefresh();
 
+    static native void nativeSetVerbose(boolean on);
+
     static native String nativeStats0();
+
+    static void setVerbose(boolean on) {
+        if (!loaded) return;
+        try {
+            nativeSetVerbose(on);
+        } catch (Throwable ignored) {
+        }
+    }
 
     /** 由 JNI flush 线程调用。 */
     @SuppressWarnings("unused")
@@ -28,26 +40,49 @@ final class NativeBridge {
     static void start(ApplicationInfo moduleInfo) {
         if (started) return;
         started = true;
+        String dir = moduleInfo == null ? null : moduleInfo.nativeLibraryDir;
+        detail = "path=" + dir + " abi=" + abi();
+        if (dir == null) {
+            status = "no-nativeLibraryDir";
+            return;
+        }
         try {
-            String dir = moduleInfo == null ? null : moduleInfo.nativeLibraryDir;
-            if (dir == null) {
-                status = "no-nativeLibraryDir";
-                return;
-            }
             System.load(dir + "/libazcap.so");
             loaded = true;
+        } catch (Throwable t) {
+            // 这一层失败通常是 so 没打进 APK 的 arm64-v8a 目录
+            status = "load-failed";
+            detail += " dlopen=" + oneLine(t);
+            Log.e(Config.TAG, "native load failed: " + dir, t);
+            return;
+        }
+        try {
             nativeInit();
             nativeStart();
+            if (Config.verbose) setVerbose(true);
             status = "started";
             scheduleRefresh();
+            Log.i(Config.TAG, "native started: " + detail);
         } catch (Throwable t) {
-            status = "load-failed:" + t.getClass().getSimpleName();
-            Log.e(Config.TAG, "native load failed: " + dirOf(moduleInfo), t);
+            // 典型：NoSuchMethodError —— Java 方法与 so 里 GetStaticMethodID 签名不一致
+            status = "init-failed";
+            detail += " init=" + oneLine(t);
+            Log.e(Config.TAG, "native init failed: " + detail, t);
         }
     }
 
-    private static String dirOf(ApplicationInfo ai) {
-        return ai == null ? "null" : String.valueOf(ai.nativeLibraryDir);
+    private static String abi() {
+        try {
+            String[] a = Build.SUPPORTED_ABIS;
+            return a != null && a.length > 0 ? a[0] : "?";
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    private static String oneLine(Throwable t) {
+        String m = t.getMessage();
+        return t.getClass().getSimpleName() + (m == null ? "" : ": " + m);
     }
 
     /** 后加载的 so（libunity/libil2cpp/libssl）需要多次 refresh 才能被 hook。 */
@@ -83,11 +118,12 @@ final class NativeBridge {
 
     static String hooksJson() {
         return "{\"native\":\"" + esc(status) + "\",\"loaded\":" + loaded
-                + ",\"refresh\":\"" + esc(lastRefresh) + "\"}";
+                + ",\"refresh\":\"" + esc(lastRefresh) + "\""
+                + ",\"detail\":\"" + esc(detail) + "\"}";
     }
 
     static String nativeStats() {
-        if (!loaded) return "{\"loaded\":false}";
+        if (!loaded) return "{\"loaded\":false,\"status\":\"" + esc(status) + "\"}";
         try {
             String s = nativeStats0();
             return s == null ? "{\"loaded\":true}" : s;
