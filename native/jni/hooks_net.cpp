@@ -78,7 +78,7 @@ static void logd_iov(const struct iovec *iov, int cnt) {
 static void logd_maybe(int fd, const struct iovec *iov, int cnt) {
     if (g_in_logd) return;
     AzConn c;
-    if (!az_conn_note(fd, &c)) return;
+    az_conn_note(fd, &c);   // void：结果通过 out 参数返回
     if (c.is_sock != 3) return;
     g_in_logd = 1;
     logd_iov(iov, cnt);
