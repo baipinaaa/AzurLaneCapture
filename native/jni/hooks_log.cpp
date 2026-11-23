@@ -8,9 +8,9 @@
 
 #include "xhook.h"
 
-// 日志 hook 对所有已加载 so 生效（记录面最大化；只读调用参数，不改行为）
-// 例外：忽略本模块自身，避免 hook 自己的出口造成递归
-static const char *kLogLibs = ".*\\.so$";
+// 日志 hook 只针对游戏本体/脚本/SDK 载体，**不碰反作弊与广告库**（避免触发自校验）
+static const char *kLogLibs =
+        "libunity\\.so$|libil2cpp\\.so$|libmain\\.so$|libtolua\\.so$|libblkv\\.so$|libreactnativejni\\.so$";
 
 typedef int (*fn_log_print)(int, const char *, const char *, ...);
 typedef int (*fn_log_write)(int, const char *, const char *);

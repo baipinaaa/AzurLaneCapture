@@ -21,6 +21,7 @@ struct Ent {
 };
 
 static Ent g_tab[TAB_SIZE];
+static Ent g_keep[TAB_SIZE];  // forget 重建时的暂存（避免 40KB 栈分配）
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_tick = 0;
 static int g_next_seq = 0;
@@ -130,7 +131,7 @@ void az_conn_forget(int fd) {
     if (fd < 0) return;
     pthread_mutex_lock(&g_m);
     // 收集存活的条目，排除目标 fd
-    Ent keep[TAB_SIZE];
+    Ent *keep = g_keep;
     int n = 0;
     for (int i = 0; i < TAB_SIZE; i++) {
         if (g_tab[i].used && g_tab[i].fd != fd) keep[n++] = g_tab[i];
