@@ -1,0 +1,81 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "ndk;27.2.12479018"
+          ls "$ANDROID_HOME/ndk"
+
+      - name: Build APK
+        run: bash scripts/build.sh release
+
+      - name: Collect info
+        id: info
+        run: |
+          echo "ts=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(sha256sum build/AzurLaneCapture-release.apk | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "size=$(stat -c %s build/AzurLaneCapture-release.apk)" >> "$GITHUB_OUTPUT"
+          echo "signer=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs build/AzurLaneCapture-release.apk | grep -m1 'SHA-256 digest' || true)" >> "$GITHUB_OUTPUT"
+          {
+            echo '### AzurLane Capture'
+            echo ''
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- apk sha256: \`$(sha256sum build/AzurLaneCapture-release.apk | cut -d' ' -f1)\`"
+            echo "- size: $(stat -c %s build/AzurLaneCapture-release.apk) bytes"
+            echo ''
+            echo '```'
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs build/AzurLaneCapture-release.apk | head -8
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: build-${{ github.run_number }}-${{ steps.info.outputs.ts }}
+          name: AzurLane Capture #${{ github.run_number }}
+          prerelease: true
+          files: build/AzurLaneCapture-release.apk
+          body: |
+            自动构建（Android 17 / arm64-v8a）
+
+            - commit: `${{ github.sha }}`
+            - run: #${{ github.run_number }}
+            - apk sha256: `${{ steps.info.outputs.sha }}`
+            - size: ${{ steps.info.outputs.size }} bytes
+            - 签名: ${{ steps.info.outputs.signer }}
+
+            安装后需在 LSPosed 中启用模块并勾选作用域 `com.bilibili.azurlane`，然后重启游戏进程。
+            日志目录：`/storage/emulated/0/logs/azurlane/`（root 不可用时降级到
+            `Android/data/com.bilibili.azurlane/files/logs/azurlane/`）。

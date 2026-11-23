@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.azurlane.capture"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+
+    <application
+        android:label="AzurLane Capture"
+        android:description="抓取碧蓝航线(com.bilibili.azurlane)的日志与网络数据到 /storage/emulated/0/logs/azurlane"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:hasCode="true" />
+</manifest>
