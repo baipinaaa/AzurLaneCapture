@@ -75,6 +75,11 @@ public class ModuleMain extends XposedModule {
         } catch (Throwable t) {
             log(Log.ERROR, Config.TAG, "native start failed", t);
         }
+        try {
+            LogcatPump.start();
+        } catch (Throwable t) {
+            log(Log.ERROR, Config.TAG, "logcat pump start failed", t);
+        }
         log(Log.INFO, Config.TAG, "hooks installed for " + ctx.getPackageName());
     }
 }

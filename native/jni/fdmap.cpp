@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -53,7 +54,18 @@ int az_conn_lookup(int fd, AzConn *out) {
     return hit;
 }
 
-// 探测 fd 是否为 inet socket；返回 AzConn（is_sock: 0 非 socket, 1 非 inet socket, 2 inet）
+// AF_UNIX 且对端是 logd 的写入 socket 时返回 1（is_sock=3 专用通道）
+static int is_logd_unix(const struct sockaddr *sa) {
+    if (sa == nullptr || sa->sa_family != AF_UNIX) return 0;
+    const struct sockaddr_un *un = (const struct sockaddr_un *)sa;
+    size_t n = sizeof(un->sun_path);
+    // sun_path 不保证 NUL 结尾，用 strnlen 保护
+    size_t len = strnlen(un->sun_path, n);
+    if (len == 0) return 0;
+    return strstr(un->sun_path, "logdw") != nullptr || strstr(un->sun_path, "logd") != nullptr;
+}
+
+// 探测 fd 是否为 inet socket；返回 AzConn（is_sock: 0 非 socket, 1 非 inet socket, 2 inet, 3 logd）
 static void probe(int fd, AzConn *out) {
     memset(out, 0, sizeof(*out));
     struct sockaddr_storage ss;
@@ -65,6 +77,11 @@ static void probe(int fd, AzConn *out) {
             return;
         }
         if (ss.ss_family != AF_INET && ss.ss_family != AF_INET6) {
+            if (is_logd_unix((struct sockaddr *)&ss)) {
+                out->is_sock = 3;
+                strncpy(out->addr, "logd", MAX_ADDR - 1);
+                return;
+            }
             out->is_sock = 1;
             return;
         }
@@ -88,6 +105,9 @@ static void probe(int fd, AzConn *out) {
         inet_ntop(AF_INET6, &in6->sin6_addr, out->addr, MAX_ADDR);
         out->port = ntohs(in6->sin6_port);
         out->is_sock = 2;
+    } else if (is_logd_unix((struct sockaddr *)&ss)) {
+        out->is_sock = 3;
+        strncpy(out->addr, "logd", MAX_ADDR - 1);
     } else {
         out->is_sock = 1;
     }

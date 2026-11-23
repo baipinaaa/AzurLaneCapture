@@ -75,9 +75,12 @@ final class FileSink {
     }
 
     // ── 对外入口（可在任意线程调用，只入队） ─────────────────────────────
+    /** 日志来源：1=Java Log hook，4=logcat 管道（已由 -s 过滤，不再走白名单）。 */
+    static final int SRC_LOGCAT = 4;
+
     static void log(int prio, int source, String tag, String msg) {
         if (!Config.captureLog || !started) return;
-        if (!LogHooks.allowed(tag)) return;
+        if (source != SRC_LOGCAT && !LogHooks.allowed(tag)) return;
         String text = msg == null ? "" : msg;
         if (text.length() > Config.MAX_LINE) {
             text = text.substring(0, Config.MAX_LINE) + "…(+" + (text.length() - Config.MAX_LINE) + ")";
@@ -390,6 +393,8 @@ final class FileSink {
                     String name = "crash/" + ts + "-" + safeName(r.tag) + ".txt";
                     append(name, r.data == null ? new byte[0] : r.data);
                     append("app.log", line("E", "CrashHandler", text, r.ts).getBytes(UTF8));
+                } else if (r.dir == SRC_LOGCAT) {
+                    append("app.log", line("C", nz(r.tag), text, r.ts).getBytes(UTF8));
                 } else if (r.dir >= 10) {
                     append("app.log", line(nativeLevel(r.dir - 10), "native/" + nz(r.tag), text, r.ts)
                             .getBytes(UTF8));
