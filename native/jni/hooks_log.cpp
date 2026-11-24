@@ -112,6 +112,11 @@ static int my_log_buf_write(int bufID, int prio, const char *tag, const char *te
     return 0;
 }
 
+int az_log_hook_mask(void) {
+    return (old_log_print ? 1 : 0) | (old_log_write ? 2 : 0)
+           | (old_log_vprint ? 4 : 0) | (old_log_buf_write ? 8 : 0);
+}
+
 void az_register_log_hooks() {
     real_log_write = (fn_log_write)dlsym(RTLD_DEFAULT, "__android_log_write");
     // 忽略自身，防止 my_log_print -> __android_log_write 被自己的 PLT hook 再捕获

@@ -226,6 +226,7 @@ void az_stats_json(char *out, size_t cap) {
     pthread_mutex_unlock(&g_q_lock);
     snprintf(out, cap,
              "{\"frames\":%ld,\"bytes\":%ld,\"dropped\":%ld,\"queue\":%d,\"queueBytes\":%zu,"
-             "\"net\":%ld,\"log\":%ld,\"tls\":%ld,\"sig\":%d}",
-             frames, bytes, drop, q, qb, net, lg, tls, g_on_frame != nullptr ? 1 : 0);
+             "\"net\":%ld,\"log\":%ld,\"tls\":%ld,\"sig\":%d,\"hookNet\":%d,\"hookLog\":%d}",
+             frames, bytes, drop, q, qb, net, lg, tls, g_on_frame != nullptr ? 1 : 0,
+             az_net_hook_mask(), az_log_hook_mask());
 }
